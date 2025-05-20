@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <title>Escenario 3D con Objetos Dispersos</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+    }
+
+    #info,
+    #animationInfo,
+    #loading,
+    #controlsHelp,
+    #footer {
+      position: absolute;
+      z-index: 100;
+      font-family: sans-serif;
+      color: white;
+      text-shadow: 0 0 10px rgba(0, 200, 255, 0.7);
+    }
+
+    #info {
+      top: 10px;
+      width: 100%;
+      text-align: center;
+    }
+
+    #animationInfo {
+      top: 40px;
+      left: 10px;
+      padding: 10px;
+      background: rgba(0, 0, 0, 0.5);
+      border: 1px solid #0ff;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 14px;
+    }
+
+    #loading {
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 24px;
+    }
+
+    #controlsHelp {
+      right: 10px;
+      bottom: 40px;
+      padding: 10px;
+      background: rgba(0, 0, 0, 0.6);
+      border: 1px solid #0ff;
+      border-radius: 6px;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    #footer {
+      bottom: 0;
+      width: 100%;
+      background: rgba(0, 0, 0, 0.8);
+      font-weight: bold;
+      padding: 5px;
+      text-align: center;
+      font-family: Arial;
+    }
+
+    canvas {
+      cursor: grab;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="info">Controles activados - usa el mouse o teclas para moverte</div>
+  <div id="animationInfo">Animación actual: Ninguna</div>
+  <div id="loading">Cargando...</div>
+  <div id="controlsHelp">
+    <b>Controles:</b><br>
+    W/A/S/D: Mover avatar<br>
+    ESPACIO: Saltar<br>
+    0: Sentarse/Levantarse<br>
+    5-9: Cambiar animación<br>
+    I/K/J/L: Cámara libre<br>
+    ↑/↓: Velocidad lluvia | N: viento original<br>
+    R/G/B/W: Color lluvia<br>
+    ←/→: Densidad niebla<br>
+    Z/X/C/V: Color niebla
+  </div>
+  <div id="footer">
+    Chica fria- INTEGRANTES: Corona Torres Karen, Bello Gonzale Jetsa, Porras Lugo Ingrid Alison| No. Control: 22200722,
+    22200715, 22200758
+  </div>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+      "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js"
+    }
+  }
+  </script>
+  <script type="module">
+    import * as THREE from 'three';
+    import * as CANNON from 'cannon-es';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+    import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+    import { AudioListener, Audio, AudioLoader } from 'three';
+    let scene, camera, renderer, clock, mixer, controls;
+    let avatar, currentAction, currentClip, avatarLight;
+    let isMoving = false;
+    let moveDirection = new THREE.Vector3();
+    let rainParticles;
+    let readyToMove = true;
+    const animFiles = ['walk', 'run', 'jump', 'dance', 'shoot', 'sit'];
+    const animNames = ['Walking', 'Run', 'Jump', 'Dance', 'Shoot', 'Sitting'];
+    const cameraMovement = { i: false, j: false, k: false, l: false };
+    let rainSpeed = 1;
+    let fogFar = 150;
+    let windStrength = 1;
+    let avatarBody;
+    let canJump = false;
+    let isSitting = false;
+    const avatarRadius = 0.6;
+    const sphereShape = new CANNON.Sphere(avatarRadius);
+    avatarBody = new CANNON.Body({
+      mass: 5,
+      shape: sphereShape,
+      position: new CANNON.Vec3(5, 0.3, -5),
+      linearDamping: 0.5,
+      angularDamping: 0.5,
+      fixedRotation: true,
+      material: new CANNON.Material('avatarMaterial')
+    });
+    let physicsWorld, physicsObjects = [];
+    init();
+    animate();
+    function escalarShape(shape, escala) {
+      if (shape instanceof CANNON.Box) {
+        const size = shape.halfExtents;
+        return new CANNON.Box(new CANNON.Vec3(
+          size.x * escala[0],
+          size.y * escala[1],
+          size.z * escala[2]
+        ));
+      } else if (shape instanceof CANNON.Sphere) {
+        return new CANNON.Sphere(shape.radius * escala[0]);
+      }
+      return shape;
+    }
+    function setupPhysics() {
+      physicsWorld = new CANNON.World({ gravity: new CANNON.Vec3(0, -9.82, 0) });
+      const groundBody = new CANNON.Body({
+        type: CANNON.Body.STATIC,
+        shape: new CANNON.Plane(),
+        quaternion: new CANNON.Quaternion().setFromEuler(-Math.PI / 2, 0, 0)
+      });
+      physicsWorld.addBody(groundBody);
+    }
+    function createPhysicsObject(mesh, shape, mass = 1, id = '') {
+      const body = new CANNON.Body({
+        mass,
+        shape,
+        position: new CANNON.Vec3(mesh.position.x, mesh.position.y, mesh.position.z)
+      });
+      body.linearDamping = 0.6;
+      body.angularDamping = 0.6;
+      body.userData = { id };
+      physicsWorld.addBody(body);
+      physicsObjects.push({ mesh, body });
+    }
+    function createGeometricObject(type, position, size, color, mass = 1, id = '') {
+      let geometry, material, mesh;
+      switch (type) {
+        case 'box':
+          geometry = new THREE.BoxGeometry(size[0], size[1], size[2]);
+          break;
+        case 'sphere':
+          geometry = new THREE.SphereGeometry(size[0], 32, 32);
+          break;
+        case 'cylinder':
+          geometry = new THREE.CylinderGeometry(size[0], size[0], size[1], 32);
+          break;
+        default:
+          geometry = new THREE.BoxGeometry(size[0], size[1], size[2]);
+      }
+      material = new THREE.MeshStandardMaterial({ color });
+      mesh = new THREE.Mesh(geometry, material);
+      mesh.position.set(position[0], position[1], position[2]);
+      scene.add(mesh);
+      let shape;
+      switch (type) {
+        case 'box':
+          shape = new CANNON.Box(new CANNON.Vec3(size[0] / 2, size[1] / 2, size[2] / 2));
+          break;
+        case 'sphere':
+          shape = new CANNON.Sphere(size[0]);
+          break;
+        case 'cylinder':
+          position[1] += size[1] / 2;
+          shape = new CANNON.Cylinder(size[0], size[0], size[1], 8);
+          break;
+        default:
+          shape = new CANNON.Box(new CANNON.Vec3(size[0] / 2, size[1] / 2, size[2] / 2));
+      }
+      createPhysicsObject(mesh, shape, mass, id);
+      return mesh;
+    }
+    async function loadFBXObject(modelPath, position, scale, mass = 1, id = '') {
+      try {
+        const model = await new Promise((resolve, reject) => {
+          const loader = new FBXLoader();
+          loader.load(modelPath, resolve, undefined, reject);
+        });
+        model.position.set(position[0], position[1], position[2]);
+        model.scale.set(scale[0], scale[1], scale[2]);
+        scene.add(model);
+        let shape;
+
+        if (id === 'plataforma') {
+          shape = new CANNON.Box(new CANNON.Vec3(0.3, 0.2, 0.3));
+          position[1] += 0.25;
+        }
+        else if (id.includes('sphere')) {
+          shape = new CANNON.Sphere(scale[0] * 0.5);
+        }
+        else if (id.includes('cylinder')) {
+          shape = new CANNON.Cylinder(scale[0], scale[0], scale[1], 8);
+        } else if (id === 'silla') {
+          shape = new CANNON.Box(new CANNON.Vec3(0.15, 0.25, 0.15));
+        } else {
+          shape = new CANNON.Box(new CANNON.Vec3(scale[0] / 2, scale[1] / 2, scale[2] / 2));
+        }
+
+        let adjustedY = position[1];
+        if (id === 'silla') {
+          adjustedY = 0.5;
+        } else if (id === 'plataforma') {
+          adjustedY = position[1] + 0.25;
+        }
+
+        const body = new CANNON.Body({
+          mass,
+          shape,
+          position: new CANNON.Vec3(position[0], adjustedY, position[2])
+        });
+        body.userData = { id };
+        physicsWorld.addBody(body);
+        physicsObjects.push({ mesh: model, body });
+        return model;
+      } catch (error) {
+        console.error('Error loading FBX:', modelPath, error);
+        console.log('Creating fallback geometric object');
+        const type = id.includes('sphere') ? 'sphere' :
+          id.includes('cylinder') ? 'cylinder' : 'box';
+        const color = id === 'empujable' ? 0xff0000 :
+          id === 'esquivar1' ? 0x00ff00 :
+            id === 'esquivar2' ? 0x0000ff : 0xffff00;
+        return createGeometricObject(type, position, scale, color, mass, id);
+      }
+    }
+    async function init() {
+      scene = new THREE.Scene();
+      scene.fog = new THREE.Fog(0xcccccc, 1, 50);
+      camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+      camera.position.set(0, 5, 15);
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.outputEncoding = THREE.sRGBEncoding;
+      document.body.appendChild(renderer.domElement);
+      controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.05;
+      clock = new THREE.Clock();
+      setupPhysics();
+
+      const pmrem = new THREE.PMREMGenerator(renderer);
+      new RGBELoader().setPath('models/rgbe/').load('shanghai_bund_4k.hdr', (hdrTex) => {
+        const envMap = pmrem.fromEquirectangular(hdrTex).texture;
+        scene.environment = envMap;
+        scene.background = envMap;
+      });
+      const floorTex = new THREE.TextureLoader().load('textures/floor.jpg');
+      floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
+      floorTex.repeat.set(10, 10);
+      const floor = new THREE.Mesh(
+        new THREE.PlaneGeometry(200, 200),
+        new THREE.MeshStandardMaterial({ map: floorTex })
+      );
+      floor.rotation.x = -Math.PI / 2;
+      scene.add(floor);
+      const sun = new THREE.DirectionalLight(0xffdd88, 3);
+      sun.position.set(150, 250, 150);
+      scene.add(sun);
+      const moon = new THREE.DirectionalLight(0x8888ff, 1);
+      moon.position.set(-120, 180, -120);
+      scene.add(moon);
+      const streetLight = new THREE.PointLight(0xffaa33, 3, 200);
+      streetLight.position.set(10, 20, 10);
+      scene.add(streetLight);
+      const chandelier = new THREE.PointLight(0xffccbb, 2.5, 180);
+      chandelier.position.set(0, 25, 0);
+      scene.add(chandelier);
+      avatarLight = new THREE.PointLight(0x00ffff, 2, 100);
+      scene.add(avatarLight);
+      const loader = new FBXLoader();
+      document.getElementById('loading').style.display = 'block';
+      loader.load(`models/fbx/${animFiles[0]}.fbx`, (model) => {
+        avatar = model;
+        avatar.scale.set(0.01, 0.01, 0.01);
+        avatar.position.set(5, 0, -5);
+        scene.add(avatar);
+        mixer = new THREE.AnimationMixer(avatar);
+        const rawClip = model.animations[0];
+        const filteredClip = new THREE.AnimationClip(rawClip.name, rawClip.duration, rawClip.tracks.filter(t => !t.name.includes('.position')));
+        currentClip = filteredClip;
+        currentAction = mixer.clipAction(currentClip);
+        currentAction.clampWhenFinished = true;
+        currentAction.loop = THREE.LoopOnce;
+        currentAction.play();
+        document.getElementById('animationInfo').textContent = `Animación actual: ${animNames[0]}`;
+        document.getElementById('loading').style.display = 'none';
+        const sphereShape = new CANNON.Sphere(avatarRadius);
+        avatarBody = new CANNON.Body({ mass: 5, shape: sphereShape, position: new CANNON.Vec3(5, 0.3, -5) });
+        avatarBody.linearDamping = 0.9;
+        avatarBody.angularDamping = 0.9;
+        physicsWorld.addBody(avatarBody);
+        avatarBody.addEventListener("collide", (e) => {
+          const other = e.contact.bi === avatarBody ? e.contact.bj : e.contact.bi;
+          const id = other.userData?.id || '';
+          if (id === 'empujable' || id === 'maletin') {
+            const dir = new CANNON.Vec3().copy(other.position).vsub(avatarBody.position);
+            const distance = dir.length();
+            if (distance > 0.01) {
+              dir.normalize();
+              const force = dir.scale(0.5);
+              other.velocity.vadd(force, other.velocity);
+            }
+          }
+          const contactNormal = new CANNON.Vec3();
+          if (e.contact.bi.id === avatarBody.id) e.contact.ni.negate(contactNormal);
+          else contactNormal.copy(e.contact.ni);
+          if (contactNormal.y > 0.5) canJump = true;
+        });
+      });
+      const rainGeo = new THREE.BufferGeometry();
+      const rainCount = 10000;
+      const rainPos = new Float32Array(rainCount * 3);
+      for (let i = 0; i < rainCount; i++) {
+        rainPos[i * 3] = (Math.random() - 0.5) * 200;
+        rainPos[i * 3 + 1] = Math.random() * 100;
+        rainPos[i * 3 + 2] = (Math.random() - 0.5) * 200;
+      }
+      rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
+      const rainMat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.5, transparent: true });
+      rainParticles = new THREE.Points(rainGeo, rainMat);
+      scene.add(rainParticles);
+
+      // Cargar múltiples instancias de prunus_persica (árboles) - más dispersos
+      await loadFBXObject('models/fbx_objetos/prunus_persica.fbx', [6, 0.5, -6], [0.0015, 0.0015, 0.0015], 0, 'tree_cerca');
+      await loadFBXObject('models/fbx_objetos/prunus_persica.fbx', [-25, 0.5, 20], [0.0015, 0.0015, 0.0015], 0, 'tree2');
+      await loadFBXObject('models/fbx_objetos/prunus_persica.fbx', [30, 0.5, -15], [0.0015, 0.0015, 0.0015], 0, 'tree3');
+      await loadFBXObject('models/fbx_objetos/prunus_persica.fbx', [-35, 0.5, -25], [0.0015, 0.0015, 0.0015], 0, 'tree4');
+      await loadFBXObject('models/fbx_objetos/prunus_persica.fbx', [40, 0.5, 10], [0.0015, 0.0015, 0.0015], 0, 'tree5');
+      await loadFBXObject('models/fbx_objetos/prunus_persica.fbx', [-45, 0.5, 5], [0.0015, 0.0015, 0.0015], 0, 'tree6');
+      await loadFBXObject('models/fbx_objetos/prunus_persica.fbx', [15, 0.5, 40], [0.0015, 0.0015, 0.0015], 0, 'tree7');
+      await loadFBXObject('models/fbx_objetos/prunus_persica.fbx', [-20, 0.5, -40], [0.0015, 0.0015, 0.0015], 0, 'tree8');
+
+      // Cargar múltiples instancias de Rock (rocas) - más dispersas
+      await loadFBXObject('models/fbx_objetos/Rock.fbx', [10, 0.3, -30], [0.01, 0.01, 0.01], 1, 'rock1');
+      await loadFBXObject('models/fbx_objetos/Rock.fbx', [25, 0.3, -35], [0.01, 0.01, 0.01], 1, 'rock2');
+      await loadFBXObject('models/fbx_objetos/Rock.fbx', [-30, 0.3, -25], [0.01, 0.01, 0.01], 1, 'rock3');
+      await loadFBXObject('models/fbx_objetos/Rock.fbx', [40, 0.3, -20], [0.01, 0.01, 0.01], 1, 'rock4');
+      await loadFBXObject('models/fbx_objetos/Rock.fbx', [-45, 0.3, -15], [0.01, 0.01, 0.01], 1, 'rock5');
+      await loadFBXObject('models/fbx_objetos/Rock.fbx', [15, 0.3, -45], [0.01, 0.01, 0.01], 1, 'rock6');
+      await loadFBXObject('models/fbx_objetos/Rock.fbx', [-25, 0.3, 35], [0.01, 0.01, 0.01], 1, 'rock7');
+      await loadFBXObject('models/fbx_objetos/Rock.fbx', [35, 0.3, 25], [0.01, 0.01, 0.01], 1, 'rock8');
+
+      // Otros objetos dispersos
+      await loadFBXObject('models/fbx_objetos/silla.fbx', [5.5, 0, -5.5], [0.01, 0.01, 0.01], 0, 'plataforma');
+      createGeometricObject('box', [-20, 1, 30], [1, 1, 1], 0xffff00, 1, 'esquivar3');
+      createGeometricObject('box', [25, 0.5, -25], [2, 1, 2], 0x999999, 0, 'estatico');
+      createGeometricObject('box', [-35, 0.5, 15], [2, 1, 2], 0x999999, 0, 'estatico2');
+      createGeometricObject('cylinder', [0, 0.5, 50], [1, 2], 0x00ff00, 0, 'cilindro1');
+      createGeometricObject('cylinder', [0, 0.5, -50], [1, 2], 0x00ff00, 0, 'cilindro2');
+
+      window.addEventListener('keydown', (e) => {
+        const k = e.key.toLowerCase();
+        if (["w", "a", "s", "d"].includes(k)) startMove(k);
+        if (k === ' ' && canJump && !isSitting) {
+          avatarBody.velocity.y = 12;
+          canJump = false;
+          loadAnimation(2);
+        }
+        if (k >= '5' && k <= '9') loadAnimation(Number(k) - 5);
+        if (k === 'i') cameraMovement.i = true;
+        if (k === 'k') cameraMovement.k = true;
+        if (k === 'j') cameraMovement.j = true;
+        if (k === 'l') cameraMovement.l = true;
+        if (k === 'arrowup') rainSpeed += 0.2;
+        if (k === 'arrowdown') rainSpeed = Math.max(0, rainSpeed - 0.2);
+        if (k === 'arrowleft') scene.fog.far = fogFar = Math.max(50, fogFar - 10);
+        if (k === 'arrowright') scene.fog.far = fogFar = Math.min(300, fogFar + 10);
+        if (k === 'n') windStrength = 1;
+        if (k === 'r') rainParticles.material.color.set(0xff0000);
+        if (k === 'g') rainParticles.material.color.set(0x00ff00);
+        if (k === 'b') rainParticles.material.color.set(0x0000ff);
+        if (k === 'w') rainParticles.material.color.set(0xffffff);
+        if (k === 'z') scene.fog.color.set(0xff0000);
+        if (k === 'x') scene.fog.color.set(0x00ff00);
+        if (k === 'c') scene.fog.color.set(0x0000ff);
+        if (k === 'v') scene.fog.color.set(0xffffff);
+
+        // Control para sentarse/levantarse
+        if (k === '0') {
+          const silla = physicsObjects.find(obj => obj.body.userData?.id === 'plataforma');
+          if (silla && avatarBody.position.distanceTo(silla.body.position) < 2) {
+            if (!isSitting) {
+              // Sentarse - posición exactamente centrada sobre la silla
+              loadAnimation(5);
+              avatarBody.position.set(
+                silla.body.position.x,
+                silla.body.position.y + 0.5,  // Altura ajustada para sentarse
+                silla.body.position.z
+              );
+              avatarBody.velocity.set(0, 0, 0);
+              avatarBody.angularVelocity.set(0, 0, 0);
+              isSitting = true;
+              canJump = false;
+            } else {
+              // Levantarse
+              loadAnimation(0);
+              avatarBody.position.set(
+                silla.body.position.x + 0.5,  // Se levanta al lado de la silla
+                silla.body.position.y + 0.5,
+                silla.body.position.z
+              );
+              isSitting = false;
+              canJump = true;
+            }
+          }
+        }
+      });
+      window.addEventListener('keyup', (e) => {
+        const k = e.key.toLowerCase();
+        if (['i', 'k', 'j', 'l'].includes(k)) cameraMovement[k] = false;
+      });
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+      const listener = new AudioListener();
+      camera.add(listener);
+      const sound = new Audio(listener);
+      const audioLoader = new AudioLoader();
+      audioLoader.load('models/rgbe/TXT.mp3', function (buffer) {
+        sound.setBuffer(buffer);
+        sound.setLoop(false);
+        sound.setVolume(0.5);
+        sound.play();
+      });
+    }
+    function loadAnimation(index) {
+      const loader = new FBXLoader();
+      document.getElementById('loading').style.display = 'block';
+      loader.load(`models/fbx/${animFiles[index]}.fbx`, (model) => {
+        const rawClip = model.animations[0];
+        const filteredClip = new THREE.AnimationClip(rawClip.name, rawClip.duration, rawClip.tracks.filter(t => !t.name.includes('.position')));
+        if (currentAction) currentAction.stop();
+        currentClip = filteredClip;
+        currentAction = mixer.clipAction(currentClip);
+        currentAction.clampWhenFinished = true;
+        if (index === 5) { // Animación de sentarse
+          currentAction.loop = THREE.LoopRepeat;
+        } else {
+          currentAction.loop = THREE.LoopOnce;
+        }
+        currentAction.play();
+        document.getElementById('animationInfo').textContent = `Animación actual: ${animNames[index]}`;
+        document.getElementById('loading').style.display = 'none';
+      });
+    }
+    function startMove(key) {
+      if (!readyToMove || isSitting) return;
+
+      const dirMap = {
+        w: [0, 0, -1],
+        s: [0, 0, 1],
+        a: [-1, 0, 0],
+        d: [1, 0, 0]
+      };
+
+      const dir = dirMap[key];
+      moveDirection.set(...dir).normalize();
+
+      avatar.lookAt(avatar.position.clone().add(moveDirection));
+
+      const impulse = new CANNON.Vec3(moveDirection.x, 0, moveDirection.z).scale(4);
+      avatarBody.applyImpulse(impulse, avatarBody.position);
+
+      if (currentAction) {
+        currentAction.reset().play();
+        isMoving = true;
+      }
+
+      readyToMove = false;
+
+      setTimeout(() => {
+        readyToMove = true;
+      }, 500);
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const delta = clock.getDelta();
+      if (mixer) mixer.update(delta);
+      if (avatar && avatarBody) {
+        if (!isSitting) {
+          avatar.position.copy(avatarBody.position);
+          avatar.position.y -= avatarRadius;
+        }
+
+        for (const { body } of physicsObjects) {
+          const id = body.userData?.id || '';
+          const dist = body.position.distanceTo(avatarBody.position);
+          if ((id.includes('rock') || id.includes('sphere')) && dist < 2.0 && readyToMove && !isSitting) {
+            const dir = new CANNON.Vec3().copy(avatarBody.position).vsub(body.position);
+            if (dir.length() > 0.01) {
+              dir.normalize();
+              const impulseStrength = 0.05;
+              const impulse = dir.scale(impulseStrength);
+              body.applyImpulse(impulse, body.position);
+              const angleY = Math.atan2(dir.x, dir.z);
+              const target = physicsObjects.find(obj => obj.body === body);
+              if (target && target.mesh) {
+                target.mesh.rotation.y = angleY;
+              }
+              body.velocity.scale(0.2, body.velocity);
+              readyToMove = false;
+              setTimeout(() => {
+                body.velocity.set(0, body.velocity.y, 0);
+                body.angularVelocity.set(0, 0, 0);
+                readyToMove = true;
+              }, 1000);
+            }
+          }
+        }
+
+        if (!isSitting) {
+          avatar.position.y = avatarBody.position.y - avatarRadius;
+        }
+        avatarLight.position.copy(avatar.position).add(new THREE.Vector3(0, 10, 0));
+      }
+      physicsWorld.fixedStep();
+      for (const { mesh, body } of physicsObjects) {
+        mesh.position.copy(body.position);
+        mesh.quaternion.copy(body.quaternion);
+      }
+      const pos = rainParticles.geometry.attributes.position.array;
+      for (let i = 0; i < pos.length; i += 3) {
+        pos[i + 1] -= rainSpeed;
+        pos[i] += windStrength * (Math.random() - 0.5);
+        if (pos[i + 1] < 0) {
+          pos[i + 1] = Math.random() * 100 + 50;
+          pos[i] = (Math.random() - 0.5) * 200;
+          pos[i + 2] = (Math.random() - 0.5) * 200;
+        }
+      }
+      rainParticles.geometry.attributes.position.needsUpdate = true;
+      const camSpeed = 10 * delta;
+      if (cameraMovement.i) camera.position.z -= camSpeed;
+      if (cameraMovement.k) camera.position.z += camSpeed;
+      if (cameraMovement.j) camera.position.x -= camSpeed;
+      if (cameraMovement.l) camera.position.x += camSpeed;
+      controls.update();
+      renderer.render(scene, camera);
+    }
+  </script>
+</body>
+
+</html>
